@@ -1,9 +1,14 @@
 #include <ruby.h>
 #include <stdarg.h>
+#include <ruby/version.h>
 #include "my_fileno.h"
 #ifdef __linux__
 
-#ifdef HAVE_RB_THREAD_IO_BLOCKING_REGION
+#if defined(HAVE_RB_THREAD_IO_BLOCKING_REGION) && RUBY_API_VERSION_CODE >= 40000
+VALUE rb_thread_io_blocking_region(struct rb_io *, rb_blocking_function_t *, void *);
+#  define rd_fd_region(fn,data,io) \
+	rb_thread_io_blocking_region((io),(fn),(data))
+#elif defined(HAVE_RB_THREAD_IO_BLOCKING_REGION)
 /* Ruby 1.9.3 and 2.0.0 */
 VALUE rb_thread_io_blocking_region(rb_blocking_function_t *, void *, int);
 #  define rd_fd_region(fn,data,fd) \
@@ -72,6 +77,9 @@ struct nogvl_args {
 	addr2stats *a2s;
 	struct iovec iov[3]; /* last iov holds inet_diag bytecode */
 	struct listen_stats stats;
+#if RUBY_API_VERSION_CODE >= 40000
+	rb_io_t *io;
+#endif
 	int fd;
 };
 
@@ -577,7 +585,11 @@ static VALUE tcp_stats(struct nogvl_args *args, VALUE addr)
 	gen_bytecode(&args->iov[2], &query_addr);
 
 	memset(&args->stats, 0, sizeof(struct listen_stats));
+#if RUBY_API_VERSION_CODE >= 40000
+	nl_errcheck(rd_fd_region(diag, args, args->io));
+#else
 	nl_errcheck(rd_fd_region(diag, args, args->fd));
+#endif
 
 	return rb_listen_stats(&args->stats);
 }
@@ -626,6 +638,9 @@ static VALUE tcp_listener_stats(int argc, VALUE *argv, VALUE self)
 	sock = NIL_P(sock) ? rb_funcall(cIDSock, id_new, 0)
 			: rb_io_get_io(sock);
 	args.fd = my_fileno(sock);
+#if RUBY_API_VERSION_CODE >= 40000
+	GetOpenFile(sock, args.io);
+#endif
 
 	switch (TYPE(addrs)) {
 	case T_STRING:
@@ -660,7 +675,11 @@ static VALUE tcp_listener_stats(int argc, VALUE *argv, VALUE self)
 		         "addr must be an array of strings, a string, or nil");
 	}
 
+#if RUBY_API_VERSION_CODE >= 40000
+	nl_errcheck(rd_fd_region(diag, &args, args.io));
+#else
 	nl_errcheck(rd_fd_region(diag, &args, args.fd));
+#endif
 
 	/* no kh_foreach* in khashl.h (unlike original khash.h) */
 	for (ki = 0; ki < kh_end(args.a2s); ki++) {
